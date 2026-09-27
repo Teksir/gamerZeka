@@ -14,7 +14,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500&family=Inter:wght@400;500&display=swap" rel="stylesheet">
 <style>
+  [hidden] { display: none !important; }
   :root {
+    color-scheme: dark;
     --bg: #131314;
     --surface: #1e1f20;
     --surface-2: #282a2c;
@@ -1516,6 +1518,63 @@ Bunların dışındaki her mesaja (genel kültür soruları, tavsiye istekleri, 
     }
   }
 
+  // ---------- claude.ai'de yayınlanınca: API anahtarı olmadan Claude'a sor ----------
+  // Sayfa claude.ai'de açıldığında "sample" yeteneğiyle Claude'a sorar; ücreti sayfayı açan kişinin
+  // kendi Claude hesabı öder ve ilk soruda izin istenir. Dosya doğrudan açılınca bu kısım hiç çalışmaz.
+  const IN_CLAUDE = !!(window.claude && typeof window.claude.use === "function");
+  let sampleFn = null;   // Claude'a soran fonksiyon; bu görünümde yoksa null
+  let sampleOff = false; // izin verilmediyse bu açılışta bir daha sorma
+  if (IN_CLAUDE) {
+    window.claude.use("sample").then(fn => { sampleFn = fn; updateAiState(); }).catch(() => {});
+  }
+
+  // chatHistory → düz metin sırası (Claude hiçbir şeyi hatırlamaz, her seferinde baştan gönderilir)
+  function sampleTurns() {
+    return chatHistory
+      .map(m => ({
+        role: m.role,
+        content: typeof m.content === "string"
+          ? m.content
+          : (m.content || []).filter(b => b.type === "text").map(b => b.text).join("")
+      }))
+      .filter(m => m.content.trim());
+  }
+
+  async function sampleReply(text) {
+    remember("user", text);
+    try {
+      const { text: answer } = await sampleFn(
+        [{ role: "user", content: SYSTEM_PROMPT }, ...sampleTurns()],
+        { modelTier: "quick", cache: false } // kısa sohbet: hızlı model, her soruya yeni cevap
+      );
+      const clean = answer.trim();
+      remember("assistant", clean);
+      if (clean.includes("[KUMRU]")) return KUMRU_REPLY;
+      if (clean.includes("[MATEMATIK]")) return MATH_REPLY;
+      if (clean.includes("[RONALDO]")) return RONALDO_REPLY;
+      if (clean.includes("[UZUM]")) return INSULT_REPLY;
+      if (clean.includes("[FATIH]")) return FATIH_REPLY;
+      if (clean.includes("[VIDEO]")) return VIDEO_REPLY;
+      if (clean.includes("[ADIN]")) return NAME_REPLY;
+      if (clean.includes("[NASILSIN]")) return HOW_ARE_YOU_REPLY;
+      if (clean.includes("[SELAM]")) return GREETING_REPLY;
+      if (hasProfanity(clean)) return CLEAN_FALLBACK;
+      return { text: clean };
+    } catch (e) {
+      if (chatHistory.length && chatHistory[chatHistory.length - 1].role === "user") chatHistory.pop();
+      const code = e && e.code;
+      if (["not_granted", "sampling_disabled", "not_declared", "capability_disabled", "capability_removed"].includes(code)) {
+        sampleOff = true; // izin yok: bu açılışta Ukala Beyin'le devam
+        updateAiState();
+        return brainReply(text);
+      }
+      if (code === "rate_limited") return { text: "Çok hızlı soru soruyorsun, beynim bile yetişemiyor. Biraz bekle, sonra tekrar dene." };
+      if (code === "refused") return { text: "Bu soruya cevap vermem yasak. Ukalalığın da bir sınırı var." };
+      if (code === "session_expired") return { text: "Oturumun kapanmış. claude.ai'ye tekrar giriş yap, sonra konuşuruz." };
+      return brainReply(text); // geçici bir sorun: bu seferlik Ukala Beyin cevap versin
+    }
+  }
+
   const form = document.getElementById("form");
   const input = document.getElementById("input");
   const send = document.getElementById("send");
@@ -1605,12 +1664,14 @@ Bunların dışındaki her mesaja (genel kültür soruları, tavsiye istekleri, 
       remember("user", text);
       remember("assistant", r.text);
       await new Promise(res => setTimeout(res, 450)); // "düşünüyormuş" gibi yapsın
-    } else if (apiKey) {
+    } else if (sampleFn && !sampleOff) {
+      r = await sampleReply(text); // claude.ai'de: anahtarsız gerçek yapay zekâ
+    } else if (apiKey && !IN_CLAUDE) {
       r = await aiReply(text);
     } else {
       await new Promise(res => setTimeout(res, 450));
       r = brainReply(text);
-      if (r.generic && !keyHintShown) { // Ukala Beyin konuyu anlayamadıysa bir kez ipucu ver
+      if (r.generic && !keyHintShown && !IN_CLAUDE) { // Ukala Beyin konuyu anlayamadıysa bir kez ipucu ver
         keyHintShown = true;
         setTimeout(() => toast("Ukala Beyin bunu tam anlayamadı. Her soruyu anlamam için sağ üstteki anahtar butonuna API anahtarı girilmeli.", 6000), 1500);
       }
@@ -1772,8 +1833,10 @@ Bunların dışındaki her mesaja (genel kültür soruları, tavsiye istekleri, 
   const keyRemove = document.getElementById("keyRemove");
 
   function updateAiState() {
-    document.body.classList.toggle("ai-on", !!apiKey);
+    const sampleOn = !!sampleFn && !sampleOff;
+    document.body.classList.toggle("ai-on", !!apiKey || sampleOn);
     keyBtn.title = apiKey ? "Yapay zekâ açık (API anahtarı kayıtlı)" : "API anahtarı ekle";
+    keyBtn.hidden = IN_CLAUDE; // claude.ai'de anahtar gerekmez (sayfa oradan dış adreslere de bağlanamaz)
   }
 
   function openKeyDialog() {
